@@ -84,6 +84,24 @@ class Analysis(Base):
     def __repr__(self):
         return f"<Analysis {self.id}>"
 
+class PeerPool(Base):
+    """Shared pool of verified peer accounts"""
+    __tablename__ = 'peer_pools'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    handle = Column(String(15), nullable=False, index=True)
+    pool_key = Column(String(100), nullable=False, index=True)  # e.g., "tech_50000-100000"
+    niche = Column(String(50), nullable=False)
+    follower_count = Column(Integer)
+    growth_rate = Column(Float)
+    is_valid = Column(Boolean, default=True)
+    last_validated = Column(DateTime, default=datetime.utcnow, index=True)
+    times_used = Column(Integer, default=0)  # Track popularity
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<PeerPool @{self.handle} in {self.pool_key}>"
+
 class OAuthState(Base):
     __tablename__ = 'oauth_states'
     
