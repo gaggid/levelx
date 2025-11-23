@@ -4,6 +4,7 @@
 venv/
 env/
 ENV/
+tests/
 .venv
 
 # Environment Variables
