@@ -1,0 +1,46 @@
+{
+  "handle": "naval",
+  "user_id": "745273",
+  "name": "Naval",
+  "bio": "Incompressible",
+  "profile_image": "https://pbs.twimg.com/profile_images/1256841238298292232/ycqwaMI2_normal.jpg",
+  "basic_metrics": {
+    "followers_count": 2950249,
+    "following_count": 0,
+    "tweet_count": 26828,
+    "listed_count": 0,
+    "follower_following_ratio": 2950249.0
+  },
+  "niche": "tech",
+  "content_style": {
+    "thread_percentage": 0.0,
+    "media_percentage": 0.0,
+    "link_percentage": 0.0,
+    "question_percentage": 0.0,
+    "avg_tweet_length": 175.0,
+    "content_mix": {
+      "threads": 0,
+      "media_posts": 0,
+      "link_posts": 0,
+      "questions": 0
+    }
+  },
+  "posting_rhythm": {
+    "posts_per_week": 4.9,
+    "consistency_score": 70,
+    "date_range_days": 23,
+    "total_analyzed": 16
+  },
+  "engagement_baseline": {
+    "avg_likes": 8974.1,
+    "avg_retweets": 896.1,
+    "avg_replies": 613.1,
+    "engagement_rate": 0.36,
+    "total_engagements": 167732,
+    "engagement_per_tweet": 10483.2
+  },
+  "growth_velocity": {
+    "estimated_30d_growth": 88507,
+    "growth_rate_pct": 3.0
+  }
+}

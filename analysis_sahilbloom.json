@@ -1,0 +1,46 @@
+{
+  "handle": "SahilBloom",
+  "user_id": "312681953",
+  "name": "Sahil Bloom",
+  "bio": "NYT Bestselling Author of The 5 Types of Wealth. Gave up a grand slam on ESPN in 2012 and still waiting for it to land. Order my book below \ud83d\udc47",
+  "profile_image": "https://pbs.twimg.com/profile_images/1586859332104343552/V1HRpbP1_normal.jpg",
+  "basic_metrics": {
+    "followers_count": 1132496,
+    "following_count": 322,
+    "tweet_count": 71304,
+    "listed_count": 0,
+    "follower_following_ratio": 3517.07
+  },
+  "niche": "writing",
+  "content_style": {
+    "thread_percentage": 0.0,
+    "media_percentage": 0.0,
+    "link_percentage": 5.6,
+    "question_percentage": 11.1,
+    "avg_tweet_length": 286.0,
+    "content_mix": {
+      "threads": 0,
+      "media_posts": 0,
+      "link_posts": 1,
+      "questions": 2
+    }
+  },
+  "posting_rhythm": {
+    "posts_per_week": 18.0,
+    "consistency_score": 100,
+    "date_range_days": 7,
+    "total_analyzed": 18
+  },
+  "engagement_baseline": {
+    "avg_likes": 4369.6,
+    "avg_retweets": 539.2,
+    "avg_replies": 180.7,
+    "engagement_rate": 0.45,
+    "total_engagements": 91610,
+    "engagement_per_tweet": 5089.4
+  },
+  "growth_velocity": {
+    "estimated_30d_growth": 56624,
+    "growth_rate_pct": 5.0
+  }
+}

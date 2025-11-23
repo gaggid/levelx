@@ -1,0 +1,39 @@
+{
+  "handle": "MrGaggi",
+  "user_id": "48807000",
+  "name": "The Ominous \ud83c\uddee\ud83c\uddf3",
+  "bio": "Interest in financial systems and continuously learning from stock markets. Share stock charts only for learning. Views are not trading advice.",
+  "profile_image": "https://pbs.twimg.com/profile_images/1844067508904497152/X7GYjJlt_normal.jpg",
+  "basic_metrics": {
+    "followers_count": 663,
+    "following_count": 939,
+    "tweet_count": 8589,
+    "listed_count": 0,
+    "follower_following_ratio": 0.71
+  },
+  "niche": "finance",
+  "content_style": {
+    "thread_percentage": 0,
+    "media_percentage": 0,
+    "link_percentage": 0,
+    "question_percentage": 0,
+    "avg_tweet_length": 0,
+    "content_mix": {}
+  },
+  "posting_rhythm": {
+    "posts_per_week": 0,
+    "consistency_score": 0
+  },
+  "engagement_baseline": {
+    "avg_likes": 0,
+    "avg_retweets": 0,
+    "avg_replies": 0,
+    "engagement_rate": 0,
+    "total_engagements": 0,
+    "engagement_per_tweet": 0
+  },
+  "growth_velocity": {
+    "estimated_30d_growth": 6,
+    "growth_rate_pct": 0.9
+  }
+}
