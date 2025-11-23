@@ -84,6 +84,17 @@ class Analysis(Base):
     def __repr__(self):
         return f"<Analysis {self.id}>"
 
+class OAuthState(Base):
+    __tablename__ = 'oauth_states'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    state = Column(String(100), unique=True, nullable=False, index=True)
+    code_verifier = Column(String(100), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    def __repr__(self):
+        return f"<OAuthState {self.state}>"
+
 
 class TweetsCache(Base):
     __tablename__ = 'tweets_cache'
