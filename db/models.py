@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, DateTime, JSON, ForeignKey, Text
+from sqlalchemy import Column, String, Integer, Float, DateTime, JSON, ForeignKey, Text, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -124,3 +124,4 @@ class TweetsCache(Base):
     
     def __repr__(self):
         return f"<TweetsCache {self.x_handle}>"
+

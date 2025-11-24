@@ -16,18 +16,18 @@ class TwitterAPIError(Exception):
 class TwitterAPIClient:
     """
     Wrapper for TwitterAPI.io
-    Documentation: https://docs.twitterapi.io/
     """
     
-    def __init__(self):
+    def __init__(self, cost_tracker=None):
         self.api_key = settings.TWITTERAPI_KEY
         self.base_url = "https://api.twitterapi.io"
         self.headers = {
-            "X-API-Key": self.api_key  # Can be uppercase or lowercase
+            "X-API-Key": self.api_key
         }
         self.timeout = 30
         self.max_retries = 3
-        self.rate_limit_delay = 5  # Free tier: 1 request per 5 seconds
+        self.rate_limit_delay = 5
+        self.cost_tracker = cost_tracker
     
     def _make_request(self, method: str, endpoint: str, params: Dict = None, retry_count: int = 0) -> Dict:
         """
@@ -37,7 +37,7 @@ class TwitterAPIClient:
         
         try:
             logger.info(f"Making request to: {url}")
-            logger.debug(f"Params: {params}")
+            # logger.debug(f"Params: {params}")
             
             response = requests.request(
                 method=method,
@@ -91,10 +91,7 @@ class TwitterAPIClient:
             raise TwitterAPIError(f"Network error: {str(e)}")
     
     def get_user_by_handle(self, handle: str) -> Dict:
-        """
-        Fetch user profile by handle
-        Endpoint: /twitter/user/info
-        """
+        """Fetch user profile by handle"""
         handle = handle.lstrip('@')
         
         logger.info(f"Fetching profile for @{handle}")
@@ -105,9 +102,18 @@ class TwitterAPIClient:
         try:
             response = self._make_request("GET", endpoint, params=params)
             
+            # Track cost
+            if self.cost_tracker:
+                self.cost_tracker.add_user_info_call()
+            
             # Response format: {"data": {...user object...}}
-            if 'data' in response:
+            if 'data' in response and response['data']:
                 user_data = response['data']
+                
+                # Validate required fields exist
+                if not user_data.get('id') or not user_data.get('userName'):
+                    logger.error(f"Invalid user data for @{handle}")
+                    return None
                 
                 # Transform to standard format
                 return {
@@ -124,20 +130,68 @@ class TwitterAPIClient:
                     }
                 }
             else:
-                logger.error(f"Unexpected response format: {response}")
-                raise TwitterAPIError("Invalid API response format")
+                logger.error(f"Account @{handle} not found or no data returned")
+                return None
         
         except TwitterAPIError:
             raise
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            raise TwitterAPIError(f"Failed to fetch user: {str(e)}")
+            return None
+    
+    def search_users(self, query: str, max_results: int = 20) -> List[Dict]:
+        """Search for users by keyword"""
+        logger.info(f"Searching users with query: '{query}'")
+        
+        endpoint = "/twitter/user/search"
+        params = {"query": query}
+        
+        try:
+            response = self._make_request("GET", endpoint, params=params)
+            
+            # Track cost
+            if self.cost_tracker:
+                self.cost_tracker.add_search_call()
+            
+            if 'users' in response:
+                users = response['users']
+                
+                # Transform to standard format
+                results = []
+                for user in users[:max_results]:
+                    # Skip unavailable/protected accounts
+                    if user.get('protected') or not user.get('id'):
+                        continue
+                    
+                    # FIXED: Correct field names from actual API response
+                    results.append({
+                        'id': user.get('id'),
+                        'username': user.get('username') or user.get('screen_name'),  # Try both
+                        'name': user.get('name'),
+                        'description': user.get('description', ''),
+                        'profile_image_url': user.get('profile_image_url_https', ''),
+                        'public_metrics': {
+                            'followers_count': user.get('followers_count', 0),  # FIXED: was 'followers'
+                            'following_count': user.get('following_count', 0),  # FIXED: was 'following'
+                            'tweet_count': user.get('statuses_count', 0),       # FIXED: was 'statusesCount'
+                            'listed_count': 0
+                        }
+                    })
+                
+                logger.info(f"Found {len(results)} users")
+                return results
+            else:
+                logger.warning(f"No users found for query: {query}")
+                return []
+        
+        except TwitterAPIError:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            raise TwitterAPIError(f"Failed to search users: {str(e)}")
     
     def get_user_tweets(self, handle: str, max_results: int = 50) -> List[Dict]:
-        """
-        Fetch recent tweets from user
-        Endpoint: /twitter/user/last_tweets
-        """
+        """Fetch recent tweets from user"""
         handle = handle.lstrip('@')
         
         logger.info(f"Fetching tweets for @{handle}")
@@ -145,15 +199,18 @@ class TwitterAPIClient:
         endpoint = "/twitter/user/last_tweets"
         params = {
             "userName": handle,
-            "count": min(max_results, 100)  # API limit
+            "count": min(max_results, 100)
         }
         
         try:
             response = self._make_request("GET", endpoint, params=params)
             
-            # FIXED: Response format is {"data": {"tweets": [...]}}
             if 'data' in response and 'tweets' in response['data']:
-                tweets_raw = response['data']['tweets']  # ← FIXED!
+                tweets_raw = response['data']['tweets']
+                
+                # Track cost (before filtering)
+                if self.cost_tracker:
+                    self.cost_tracker.add_tweets_call(len(tweets_raw))
                 
                 # Transform to standard format
                 tweets = []

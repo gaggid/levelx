@@ -3,6 +3,7 @@ import re
 from collections import Counter
 from datetime import datetime
 import logging
+from ai.claude_client import ClaudeClient, ClaudeAPIError
 
 logger = logging.getLogger(__name__)
 
@@ -12,19 +13,16 @@ class UserProfiler:
     Analyzes user profiles and tweets to extract insights
     """
     
-    # Common niche keywords for classification
-    NICHE_KEYWORDS = {
-        'tech': ['developer', 'programming', 'software', 'engineer', 'code', 'tech', 'ai', 'ml', 'data', 'startup'],
-        'business': ['entrepreneur', 'founder', 'startup', 'business', 'ceo', 'saas', 'growth', 'revenue'],
-        'marketing': ['marketing', 'seo', 'content', 'copywriting', 'branding', 'ads', 'funnel', 'conversion'],
-        'design': ['designer', 'ui', 'ux', 'figma', 'graphic', 'brand', 'creative', 'design'],
-        'writing': ['writer', 'author', 'writing', 'book', 'newsletter', 'blog', 'content', 'storytelling'],
-        'productivity': ['productivity', 'habits', 'efficiency', 'time management', 'gtd', 'focus'],
-        'finance': ['finance', 'investing', 'stocks', 'trading', 'wealth', 'money', 'portfolio'],
-        'crypto': ['crypto', 'bitcoin', 'ethereum', 'blockchain', 'web3', 'defi', 'nft'],
-        'health': ['fitness', 'health', 'nutrition', 'wellness', 'workout', 'diet', 'exercise'],
-        'education': ['education', 'learning', 'teacher', 'course', 'teaching', 'student', 'knowledge']
-    }
+    def __init__(self, cost_tracker=None):
+        """Initialize profiler with AI client"""
+        try:
+            self.claude = ClaudeClient()
+            self.cost_tracker = cost_tracker
+            logger.info("UserProfiler initialized with AI niche detection")
+        except Exception as e:
+            logger.warning(f"Could not initialize Claude client: {e}. Will use keyword fallback.")
+            self.claude = None
+            self.cost_tracker = cost_tracker
     
     def analyze_user(self, user_data: Dict, tweets: List[Dict]) -> Dict:
         """
@@ -79,23 +77,112 @@ class UserProfiler:
     
     def _detect_niche(self, user_data: Dict, tweets: List[Dict]) -> str:
         """
-        Detect user's niche from bio and tweets
+        Detect user's niche using AI (with keyword fallback)
+        """
+        # Try AI detection first if available
+        if self.claude:
+            try:
+                niche = self._detect_niche_with_ai(user_data, tweets)
+                logger.info(f"AI detected niche: {niche}")
+                return niche
+            except Exception as e:
+                logger.warning(f"AI niche detection failed: {e}, falling back to keywords")
+        
+        # Fallback to keyword-based detection
+        return self._detect_niche_keywords(user_data, tweets)
+    
+    def _detect_niche_with_ai(self, user_data: Dict, tweets: List[Dict]) -> str:
+        """
+        Use Claude to detect niche accurately
+        """
+        bio = user_data.get('description', '')
+        
+        # Get sample of recent tweet text
+        tweet_samples = []
+        for tweet in tweets[:10]:
+            text = tweet.get('text', '')
+            if text:
+                tweet_samples.append(text[:100])
+        
+        tweet_text = ' '.join(tweet_samples)
+        
+        prompt = f"""Analyze this X/Twitter account and determine their primary niche/topic.
+
+    **Bio:** {bio[:300]}
+
+    **Recent tweets:** {tweet_text[:600]}
+
+    **Available niches:** tech, business, marketing, design, writing, productivity, finance, crypto, ai, health, education, entertainment, sports, other
+
+    Return ONLY ONE word from the list above. No explanation, just the niche word."""
+
+        system = "You are a content classification expert. Analyze the account and return only the single best-matching niche category from the provided list."
+        
+        try:
+            response = self.claude.complete(
+                prompt=prompt,
+                system=system,
+                temperature=0,
+                cost_tracker=self.cost_tracker
+            )
+            
+            # Extract and validate niche
+            niche = response.strip().lower()
+            
+            valid_niches = [
+                'tech', 'business', 'marketing', 'design', 'writing',
+                'productivity', 'finance', 'crypto', 'ai', 'health',
+                'education', 'entertainment', 'sports', 'other'
+            ]
+            
+            if niche in valid_niches:
+                return niche
+            
+            # If response contains one of the valid niches, extract it
+            for valid in valid_niches:
+                if valid in niche:
+                    return valid
+            
+            logger.warning(f"AI returned invalid niche: {niche}")
+            return 'other'
+            
+        except ClaudeAPIError as e:
+            logger.error(f"Claude API error in niche detection: {e}")
+            raise
+    
+    def _detect_niche_keywords(self, user_data: Dict, tweets: List[Dict]) -> str:
+        """
+        Fallback: Detect user's niche from bio and tweets using keywords
         """
         bio = user_data.get('description', '').lower()
         tweet_text = ' '.join([t.get('text', '').lower() for t in tweets[:20]])
         
         combined_text = f"{bio} {tweet_text}"
         
+        # Enhanced keywords
+        niche_keywords = {
+            'tech': ['developer', 'programming', 'software', 'engineer', 'code', 'tech', 'ai', 'ml', 'data', 'startup', 'openai', 'anthropic'],
+            'business': ['entrepreneur', 'founder', 'startup', 'business', 'ceo', 'saas', 'growth', 'revenue', 'ycombinator', 'y combinator'],
+            'marketing': ['marketing', 'seo', 'content', 'copywriting', 'branding', 'ads', 'funnel', 'conversion'],
+            'design': ['designer', 'ui', 'ux', 'figma', 'graphic', 'brand', 'creative', 'design'],
+            'writing': ['writer', 'author', 'writing', 'book', 'newsletter', 'blog', 'content', 'storytelling'],
+            'productivity': ['productivity', 'habits', 'efficiency', 'time management', 'gtd', 'focus'],
+            'finance': ['finance', 'investing', 'stocks', 'trading', 'wealth', 'money', 'portfolio'],
+            'crypto': ['crypto', 'bitcoin', 'ethereum', 'blockchain', 'web3', 'defi', 'nft'],
+            'health': ['fitness', 'health', 'nutrition', 'wellness', 'workout', 'diet', 'exercise'],
+            'education': ['education', 'learning', 'teacher', 'course', 'teaching', 'student', 'knowledge']
+        }
+        
         # Score each niche
         niche_scores = {}
-        for niche, keywords in self.NICHE_KEYWORDS.items():
+        for niche, keywords in niche_keywords.items():
             score = sum(1 for keyword in keywords if keyword in combined_text)
             niche_scores[niche] = score
         
         # Get top niche
         if max(niche_scores.values()) > 0:
             detected_niche = max(niche_scores, key=niche_scores.get)
-            logger.info(f"Detected niche: {detected_niche} (score: {niche_scores[detected_niche]})")
+            logger.info(f"Keyword detected niche: {detected_niche} (score: {niche_scores[detected_niche]})")
             return detected_niche
         
         logger.warning("Could not detect niche, defaulting to 'other'")
