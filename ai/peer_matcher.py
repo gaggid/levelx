@@ -1,3 +1,5 @@
+# Add at top of peer_matcher.py
+from data.peer_pool_manager import PeerPoolManager
 from typing import Dict, List, Optional, Tuple
 from ai.claude_client import ClaudeClient, ClaudeAPIError
 from data.twitter_client import TwitterAPIClient, TwitterAPIError
@@ -16,29 +18,68 @@ class PeerMatcher:
     AI-powered peer account matching system
     """
     
+    # Modify __init__ method
     def __init__(self, cost_tracker=None):
         self.claude = ClaudeClient()
         self.twitter = TwitterAPIClient(cost_tracker=cost_tracker)
         self.profiler = UserProfiler(cost_tracker=cost_tracker)
         self.cost_tracker = cost_tracker
-        logger.info("PeerMatcher initialized")
+        self.pool_manager = PeerPoolManager(min_pool_size=10, validation_days=7)  # NEW
+        logger.info("PeerMatcher initialized with peer pool support")
     
     def find_peers(
         self,
         user_profile: Dict,
         count: int = 5,
         save_to_db: bool = False,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        use_pool: bool = True  # NEW parameter
     ) -> List[Dict]:
         """
         Find similar accounts that are growing faster
+        
+        Args:
+            user_profile: User's profile data
+            count: Number of peers to return
+            save_to_db: Save matches to database
+            user_id: User ID for database storage
+            use_pool: Check peer pool first (default True)
         """
         logger.info(f"Finding {count} peers for @{user_profile['handle']}")
         
+        niche = user_profile['niche']
+        followers = user_profile['basic_metrics']['followers_count']
+        
+        # NEW: Check pool first if enabled
+        pool_handles = []
+        if use_pool:
+            pool_key = self.pool_manager.generate_pool_key(niche, followers)
+            pool_handles = self.pool_manager.get_peers_from_pool(
+                niche=niche,
+                followers=followers,
+                count=count * 2,  # Get more from pool for filtering
+                require_valid=True
+            )
+            
+            if pool_handles:
+                logger.info(f"✅ Pool HIT - got {len(pool_handles)} peers from pool '{pool_key}'")
+            else:
+                logger.info(f"❌ Pool MISS - pool '{pool_key}' is empty, searching Twitter")
+        
         try:
-            # Step 1: Search Twitter for real similar accounts
-            suggested_handles = self._search_similar_accounts(user_profile, count)
-            logger.info(f"Search found {len(suggested_handles)} accounts")
+            # Step 1: Get candidate handles (pool + search if needed)
+            if pool_handles and len(pool_handles) >= self.pool_manager.min_pool_size:
+                # Pool has enough peers, use them
+                suggested_handles = pool_handles
+                logger.info(f"Using {len(suggested_handles)} peers from pool")
+            else:
+                # Pool insufficient, search Twitter
+                logger.info(f"Pool has {len(pool_handles)} peers, supplementing with Twitter search")
+                search_handles = self._search_similar_accounts(user_profile, count)
+                
+                # Combine pool + search, remove duplicates
+                suggested_handles = list(set(pool_handles + search_handles))
+                logger.info(f"Combined: {len(pool_handles)} from pool + {len(search_handles)} from search = {len(suggested_handles)} total")
             
             # Step 2: Validate and fetch peer profiles
             validated_peers = self._validate_peers(suggested_handles)
@@ -50,17 +91,27 @@ class PeerMatcher:
             # Step 3: Calculate match scores
             scored_peers = self._score_peers(user_profile, validated_peers)
             
-            # Step 3.5: Filter by follower range (remove outliers)
+            # Step 4: Filter by follower range
             scored_peers = self._filter_by_follower_range(user_profile, scored_peers)
             
-            # Step 4: Filter for faster-growing accounts
+            # Step 5: Filter for faster-growing accounts
             faster_peers = self._filter_faster_growing(user_profile, scored_peers)
             logger.info(f"Found {len(faster_peers)} faster-growing peers")
             
-            # Step 5: Sort by match score and take top N
+            # Step 6: Sort by match score and take top N
             top_peers = sorted(faster_peers, key=lambda x: x['match_score'], reverse=True)[:count]
             
-            # Step 6: Save to database if requested
+            # Step 7: NEW - Add validated peers back to pool
+            if use_pool and top_peers:
+                pool_key = self.pool_manager.generate_pool_key(niche, followers)
+                added = self.pool_manager.add_peers_to_pool(top_peers, niche, pool_key)
+                
+                # Increment usage for peers that came from pool
+                used_from_pool = [p['handle'] for p in top_peers if p['handle'] in pool_handles]
+                if used_from_pool:
+                    self.pool_manager.increment_usage(used_from_pool, pool_key)
+            
+            # Step 8: Save to database if requested
             if save_to_db and user_id:
                 self._save_to_database(user_id, top_peers)
             
