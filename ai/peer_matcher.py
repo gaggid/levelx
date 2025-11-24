@@ -92,15 +92,24 @@ class PeerMatcher:
         
         all_handles = []
         
-        # WIDER RANGE: For small accounts, be more flexible
-        if followers < 1000:
-            min_followers = int(followers * 0.3)
-            max_followers = int(followers * 5.0)
+        # ADAPTIVE FOLLOWER RANGE: Wider for small accounts
+        if followers < 500:
+            min_followers = int(followers * 0.3)   # 30% of user
+            max_followers = int(followers * 10.0)  # 10x user (e.g., 200 → 2,000)
+        elif followers < 1000:
+            min_followers = int(followers * 0.3)   # 30% of user
+            max_followers = int(followers * 5.0)   # 5x user (e.g., 661 → 3,305)
+        elif followers < 5000:
+            min_followers = int(followers * 0.4)   # 40% of user
+            max_followers = int(followers * 3.0)   # 3x user
+        elif followers < 10000:
+            min_followers = int(followers * 0.5)   # 50% of user
+            max_followers = int(followers * 2.5)   # 2.5x user
         else:
-            min_followers = int(followers * 0.5)
-            max_followers = int(followers * 2.0)
+            min_followers = int(followers * 0.5)   # 50% of user
+            max_followers = int(followers * 2.0)   # 2x user
         
-        logger.info(f"Searching for accounts with {min_followers:,}-{max_followers:,} followers")
+        logger.info(f"Searching for accounts with {min_followers:,}-{max_followers:,} followers (adaptive range)")
         
         # Track what we're seeing
         follower_counts_seen = []
@@ -260,10 +269,27 @@ class PeerMatcher:
         return score
     
     def _filter_by_follower_range(self, user_profile: Dict, peers: List[Dict]) -> List[Dict]:
-        """Remove peers outside acceptable follower range"""
+        """Remove peers outside acceptable follower range (uses same adaptive logic)"""
         user_followers = user_profile['basic_metrics']['followers_count']
-        min_followers = int(user_followers * 0.5)
-        max_followers = int(user_followers * 2.0)
+        
+        # ADAPTIVE FOLLOWER RANGE: Same logic as search
+        if user_followers < 500:
+            min_followers = int(user_followers * 0.3)
+            max_followers = int(user_followers * 10.0)
+        elif user_followers < 1000:
+            min_followers = int(user_followers * 0.3)
+            max_followers = int(user_followers * 5.0)
+        elif user_followers < 5000:
+            min_followers = int(user_followers * 0.4)
+            max_followers = int(user_followers * 3.0)
+        elif user_followers < 10000:
+            min_followers = int(user_followers * 0.5)
+            max_followers = int(user_followers * 2.5)
+        else:
+            min_followers = int(user_followers * 0.5)
+            max_followers = int(user_followers * 2.0)
+        
+        logger.info(f"Filtering peers to range: {min_followers:,}-{max_followers:,} followers")
         
         filtered = []
         for peer in peers:
@@ -274,6 +300,7 @@ class PeerMatcher:
             else:
                 logger.info(f"❌ Filtered out @{peer['handle']} - {peer_followers:,} followers outside range")
         
+        logger.info(f"✅ {len(filtered)} peers remain after follower range filter")
         return filtered
     
     def _filter_faster_growing(self, user_profile: Dict, peers: List[Dict]) -> List[Dict]:
