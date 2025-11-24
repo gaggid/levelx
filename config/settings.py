@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     DEBUG: bool = True
 
-    GEMINI_API_KEY: Optional[str] = "AIzaSyDs7_5vlXkUrj5nI-SDTExOZHTVIDVsv_U"
+    GEMINI_API_KEY: Optional[str] = None
 
     # Database
     SUPABASE_URL: str
