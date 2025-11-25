@@ -1,454 +1,257 @@
-from typing import Dict, List
-import re
-from collections import Counter
+# data/user_profiler.py
+from typing import Dict, List, Optional
+import json
 from datetime import datetime
 import logging
-from ai.claude_client import ClaudeClient, ClaudeAPIError
+from ai.grok_client import GrokClient, GrokAPIError
 
 logger = logging.getLogger(__name__)
 
 
 class UserProfiler:
     """
-    Analyzes user profiles and tweets to extract insights
+    Analyzes user profiles using Grok API with smart tweet fetching
     """
     
     def __init__(self, cost_tracker=None):
-        """Initialize profiler with AI client"""
+        """Initialize profiler with Grok client"""
         try:
-            self.claude = ClaudeClient()
+            self.grok = GrokClient()
             self.cost_tracker = cost_tracker
-            logger.info("UserProfiler initialized with AI niche detection")
+            logger.info("UserProfiler initialized with Grok AI")
         except Exception as e:
-            logger.warning(f"Could not initialize Claude client: {e}. Will use keyword fallback.")
-            self.claude = None
-            self.cost_tracker = cost_tracker
+            logger.error(f"Could not initialize Grok client: {e}")
+            raise
     
-    def analyze_user(self, user_data: Dict, tweets: List[Dict]) -> Dict:
+    def analyze_user(
+        self, 
+        user_data: Dict, 
+        tweets: Optional[List[Dict]] = None
+    ) -> Dict:
         """
-        Generate comprehensive user profile
+        Generate comprehensive user profile using Grok
         
         Args:
             user_data: User profile from X API
-            tweets: List of recent tweets
+            tweets: Optional list of recent tweets (only needed for small accounts)
         
         Returns:
-            Dict with analysis results
+            Dict with analysis results including Grok-enhanced profile
         """
-        logger.info(f"Analyzing user @{user_data.get('username', 'unknown')}")
+        handle = user_data.get('username', 'unknown')
+        followers = user_data.get('public_metrics', {}).get('followers_count', 0)
         
-        profile = {
-            'handle': user_data.get('username'),
-            'user_id': user_data.get('id'),
-            'name': user_data.get('name'),
-            'bio': user_data.get('description', ''),
-            'profile_image': user_data.get('profile_image_url'),
-            'basic_metrics': self._extract_basic_metrics(user_data),
-            'niche': self._detect_niche(user_data, tweets),
-            'content_style': self._analyze_content_style(tweets),
-            'posting_rhythm': self._analyze_posting_rhythm(tweets),
-            'engagement_baseline': self._calculate_engagement(tweets, user_data),
-            'growth_velocity': self._estimate_growth(user_data, tweets)
-        }
+        logger.info(f"Analyzing user @{handle} ({followers:,} followers) with Grok")
         
-        logger.info(f"Analysis complete for @{profile['handle']} - Niche: {profile['niche']}")
-        return profile
+        try:
+            # Determine if we need tweets
+            needs_tweets = self._should_fetch_tweets(followers)
+            
+            if needs_tweets and not tweets:
+                raise ValueError(f"Account @{handle} has {followers:,} followers and needs tweets for profiling")
+            
+            # Build appropriate prompt based on account size
+            if needs_tweets:
+                prompt = self._build_profile_prompt_with_tweets(user_data, tweets)
+                logger.info(f"Profiling with {len(tweets)} tweets (small account)")
+            else:
+                prompt = self._build_profile_prompt_handle_only(user_data)
+                logger.info(f"Profiling by handle only (famous account)")
+            
+            # Get Grok analysis
+            grok_profile = self.grok.complete_json(
+                prompt=prompt,
+                temperature=0.0,
+                cost_tracker=self.cost_tracker
+            )
+            
+            # Validate response
+            if not grok_profile or 'handle' not in grok_profile:
+                raise ValueError("Invalid Grok response structure")
+            
+            logger.info(f"✅ Grok analysis complete for @{handle}")
+            logger.info(f"   Primary niche: {grok_profile.get('primary_niche')}")
+            logger.info(f"   Growth trend: {grok_profile.get('growth_trend_last_30_days')}")
+            
+            # Build complete profile
+            profile = {
+                'handle': handle,
+                'user_id': user_data.get('id'),
+                'name': user_data.get('name'),
+                'bio': user_data.get('description', ''),
+                'profile_image': user_data.get('profile_image_url'),
+                'basic_metrics': self._extract_basic_metrics(user_data),
+                'grok_profile': grok_profile,  # Full Grok analysis
+                # Legacy fields for backward compatibility
+                'niche': self._extract_primary_niche(grok_profile),
+                'content_style': self._build_content_style(grok_profile),
+                'posting_rhythm': self._build_posting_rhythm(grok_profile),
+                'engagement_baseline': self._build_engagement_baseline(grok_profile),
+                'growth_velocity': self._build_growth_velocity(grok_profile)
+            }
+            
+            return profile
+            
+        except GrokAPIError as e:
+            logger.error(f"Grok API error: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error in user profiling: {e}")
+            raise
+    
+    def _should_fetch_tweets(self, followers_count: int) -> bool:
+        """
+        Determine if we need to fetch tweets based on account size
+        
+        Famous accounts (>100K): Grok knows them already
+        Small accounts (<100K): Need tweets to profile
+        """
+        FAMOUS_THRESHOLD = 100000
+        return followers_count < FAMOUS_THRESHOLD
+    
+    def _build_profile_prompt_with_tweets(self, user_data: Dict, tweets: List[Dict]) -> str:
+        """
+        Build prompt WITH tweets for small/unknown accounts
+        """
+        handle = user_data.get('username', '')
+        bio = user_data.get('description', '')
+        followers = user_data.get('public_metrics', {}).get('followers_count', 0)
+        following = user_data.get('public_metrics', {}).get('following_count', 0)
+        total_posts = user_data.get('public_metrics', {}).get('tweet_count', 0)
+        
+        # Format tweets as JSON array
+        recent_posts = []
+        for tweet in tweets[:40]:  # Use up to 40 tweets
+            post = {
+                'text': tweet.get('text', ''),
+                'likes': tweet.get('public_metrics', {}).get('like_count', 0),
+                'reposts': tweet.get('public_metrics', {}).get('retweet_count', 0),
+                'replies': tweet.get('public_metrics', {}).get('reply_count', 0),
+                'views': tweet.get('public_metrics', {}).get('view_count', 0),
+                'created_at': tweet.get('created_at', '')
+            }
+            recent_posts.append(post)
+        
+        recent_posts_json = json.dumps(recent_posts, indent=2)
+        
+        prompt = f"""You are an expert X/Twitter analyst. Analyze this user and return ONLY a valid JSON object. No markdown, no explanations, no extra text.
+
+User data:
+Handle: {handle}
+Bio: {bio}
+Followers: {followers}
+Following: {following}
+Total posts: {total_posts}
+
+Recent posts (newest first) as JSON array:
+{recent_posts_json}
+
+Return exactly this JSON structure:
+
+{{
+  "handle": "{handle}",
+  "followers": {followers},
+  "primary_niche": "one-sentence summary of main content pillar",
+  "secondary_topics": ["topic1", "topic2", "topic3", "max 5"],
+  "content_style": "e.g. threads, charts, memes, one-liners, motivational, educational, political commentary",
+  "average_likes_per_post": 12.4,
+  "average_views_per_post": 1847,
+  "growth_trend_last_30_days": "growing fast" | "growing steadily" | "stagnant" | "declining",
+  "estimated_monthly_follower_growth_percent": 8.5,
+  "language_mix": "English 90%, Spanish 10%" or similar,
+  "posting_frequency_per_week": 12,
+  "visual_content_ratio": "high" | "medium" | "low",
+  "key_hashtags": ["#hashtag1", "#hashtag2", "max 8"],
+  "strengths": ["max 4 short bullets"],
+  "weaknesses_for_growth": ["max 4 short bullets"]
+}}"""
+        
+        return prompt
+    
+    def _build_profile_prompt_handle_only(self, user_data: Dict) -> str:
+        """
+        Build prompt WITHOUT tweets for famous accounts (Grok knows them)
+        """
+        handle = user_data.get('username', '')
+        bio = user_data.get('description', '')
+        followers = user_data.get('public_metrics', {}).get('followers_count', 0)
+        
+        prompt = f"""You are an expert X/Twitter analyst. You have knowledge of famous X accounts.
+
+Analyze @{handle} using your built-in knowledge. Return ONLY a valid JSON object. No markdown, no explanations.
+
+Account info:
+Handle: {handle}
+Bio: {bio}
+Current Followers: {followers}
+
+Use your knowledge of this account to provide a complete profile.
+
+Return exactly this JSON structure:
+
+{{
+  "handle": "{handle}",
+  "followers": {followers},
+  "primary_niche": "one-sentence summary of main content pillar",
+  "secondary_topics": ["topic1", "topic2", "topic3", "max 5"],
+  "content_style": "e.g. threads, charts, memes, one-liners, motivational, educational, political commentary",
+  "average_likes_per_post": 12.4,
+  "average_views_per_post": 1847,
+  "growth_trend_last_30_days": "growing fast" | "growing steadily" | "stagnant" | "declining",
+  "estimated_monthly_follower_growth_percent": 8.5,
+  "language_mix": "English 90%, Spanish 10%" or similar,
+  "posting_frequency_per_week": 12,
+  "visual_content_ratio": "high" | "medium" | "low",
+  "key_hashtags": ["#hashtag1", "#hashtag2", "max 8"],
+  "strengths": ["max 4 short bullets"],
+  "weaknesses_for_growth": ["max 4 short bullets"]
+}}"""
+        
+        return prompt
     
     def _extract_basic_metrics(self, user_data: Dict) -> Dict:
         """Extract basic account metrics"""
         metrics = user_data.get('public_metrics', {})
         
+        followers = metrics.get('followers_count', 0)
+        following = metrics.get('following_count', 0)
+        
         return {
-            'followers_count': metrics.get('followers_count', 0),
-            'following_count': metrics.get('following_count', 0),
+            'followers_count': followers,
+            'following_count': following,
             'tweet_count': metrics.get('tweet_count', 0),
             'listed_count': metrics.get('listed_count', 0),
-            'follower_following_ratio': self._calculate_ff_ratio(
-                metrics.get('followers_count', 0),
-                metrics.get('following_count', 0)
-            )
+            'follower_following_ratio': round(followers / following, 2) if following > 0 else float(followers)
         }
     
-    def _calculate_ff_ratio(self, followers: int, following: int) -> float:
-        """Calculate follower/following ratio"""
-        if following == 0:
-            return float(followers)
-        return round(followers / following, 2)
-    
-    def _detect_niche(self, user_data: Dict, tweets: List[Dict]) -> str:
-        """
-        Detect user's niche using AI (with keyword fallback)
-        """
-        # Try AI detection first if available
-        if self.claude:
-            try:
-                niche = self._detect_niche_with_ai(user_data, tweets)
-                logger.info(f"AI detected niche: {niche}")
-                return niche
-            except Exception as e:
-                logger.warning(f"AI niche detection failed: {e}, falling back to keywords")
+    def _extract_primary_niche(self, grok_profile: Dict) -> str:
+        """Extract primary niche from Grok profile"""
+        primary = grok_profile.get('primary_niche', 'other')
         
-        # Fallback to keyword-based detection
-        return self._detect_niche_keywords(user_data, tweets)
-    
-    def _detect_niche_with_ai(self, user_data: Dict, tweets: List[Dict]) -> str:
-        """
-        Use Claude to detect niche accurately
-        """
-        bio = user_data.get('description', '')
-        
-        # Get sample of recent tweet text
-        tweet_samples = []
-        for tweet in tweets[:10]:
-            text = tweet.get('text', '')
-            if text:
-                tweet_samples.append(text[:100])
-        
-        tweet_text = ' '.join(tweet_samples)
-        
-        prompt = f"""Analyze this X/Twitter account and determine their primary niche/topic.
-
-    **Bio:** {bio[:300]}
-
-    **Recent tweets:** {tweet_text[:600]}
-
-    **Available niches:** tech, business, marketing, design, writing, productivity, finance, crypto, ai, health, education, entertainment, sports, other
-
-    Return ONLY ONE word from the list above. No explanation, just the niche word."""
-
-        system = "You are a content classification expert. Analyze the account and return only the single best-matching niche category from the provided list."
-        
-        try:
-            response = self.claude.complete(
-                prompt=prompt,
-                system=system,
-                temperature=0,
-                cost_tracker=self.cost_tracker
-            )
-            
-            # Extract and validate niche
-            niche = response.strip().lower()
-            
-            valid_niches = [
-                'tech', 'business', 'marketing', 'design', 'writing',
-                'productivity', 'finance', 'crypto', 'ai', 'health',
-                'education', 'entertainment', 'sports', 'other'
-            ]
-            
-            if niche in valid_niches:
-                return niche
-            
-            # If response contains one of the valid niches, extract it
-            for valid in valid_niches:
-                if valid in niche:
-                    return valid
-            
-            logger.warning(f"AI returned invalid niche: {niche}")
-            return 'other'
-            
-        except ClaudeAPIError as e:
-            logger.error(f"Claude API error in niche detection: {e}")
-            raise
-    
-    def _detect_niche_keywords(self, user_data: Dict, tweets: List[Dict]) -> str:
-        """
-        Fallback: Detect user's niche from bio and tweets using keywords
-        """
-        bio = user_data.get('description', '').lower()
-        tweet_text = ' '.join([t.get('text', '').lower() for t in tweets[:20]])
-        
-        combined_text = f"{bio} {tweet_text}"
-        
-        # Enhanced keywords
+        # Try to map to our niche categories
         niche_keywords = {
-            'tech': ['developer', 'programming', 'software', 'engineer', 'code', 'tech', 'ai', 'ml', 'data', 'startup', 'openai', 'anthropic'],
-            'business': ['entrepreneur', 'founder', 'startup', 'business', 'ceo', 'saas', 'growth', 'revenue', 'ycombinator', 'y combinator'],
-            'marketing': ['marketing', 'seo', 'content', 'copywriting', 'branding', 'ads', 'funnel', 'conversion'],
-            'design': ['designer', 'ui', 'ux', 'figma', 'graphic', 'brand', 'creative', 'design'],
-            'writing': ['writer', 'author', 'writing', 'book', 'newsletter', 'blog', 'content', 'storytelling'],
-            'productivity': ['productivity', 'habits', 'efficiency', 'time management', 'gtd', 'focus'],
-            'finance': ['finance', 'investing', 'stocks', 'trading', 'wealth', 'money', 'portfolio'],
-            'crypto': ['crypto', 'bitcoin', 'ethereum', 'blockchain', 'web3', 'defi', 'nft'],
-            'health': ['fitness', 'health', 'nutrition', 'wellness', 'workout', 'diet', 'exercise'],
-            'education': ['education', 'learning', 'teacher', 'course', 'teaching', 'student', 'knowledge']
+            'tech': ['technology', 'software', 'developer', 'programming', 'ai', 'machine learning'],
+            'business': ['business', 'entrepreneur', 'startup', 'founder', 'saas'],
+            'marketing': ['marketing', 'content', 'seo', 'branding'],
+            'finance': ['finance', 'investing', 'trading', 'stocks', 'crypto'],
+            'health': ['health', 'fitness', 'wellness', 'nutrition'],
         }
         
-        # Score each niche
-        niche_scores = {}
+        primary_lower = primary.lower()
         for niche, keywords in niche_keywords.items():
-            score = sum(1 for keyword in keywords if keyword in combined_text)
-            niche_scores[niche] = score
+            if any(kw in primary_lower for kw in keywords):
+                return niche
         
-        # Get top niche
-        if max(niche_scores.values()) > 0:
-            detected_niche = max(niche_scores, key=niche_scores.get)
-            logger.info(f"Keyword detected niche: {detected_niche} (score: {niche_scores[detected_niche]})")
-            return detected_niche
-        
-        logger.warning("Could not detect niche, defaulting to 'other'")
         return 'other'
     
-    def _analyze_content_style(self, tweets: List[Dict]) -> Dict:
-        """
-        Analyze tweet composition and style
-        """
-        if not tweets:
-            return self._empty_content_style()
+    def _build_content_style(self, grok_profile: Dict) -> Dict:
+        """Build content style dict from Grok profile"""
+        visual_ratio = grok_profile.get('visual_content_ratio', 'medium')
+        visual_map = {'high': 70, 'medium': 40, 'low': 10}
         
-        total = len(tweets)
-        
-        # Count different content types
-        thread_count = 0
-        media_count = 0
-        link_count = 0
-        question_count = 0
-        
-        for tweet in tweets:
-            text = tweet.get('text', '')
-            entities = tweet.get('entities', {})
-            
-            # Detect threads
-            if self._is_thread_starter(text):
-                thread_count += 1
-            
-            # Detect media (check both entities and tweet-level fields)
-            if self._has_media(tweet, entities):
-                media_count += 1
-            
-            # Detect links
-            if self._has_link(entities):
-                link_count += 1
-            
-            # Detect questions
-            if '?' in text:
-                question_count += 1
-        
-        # Calculate average lengths
-        lengths = [len(t.get('text', '')) for t in tweets]
-        avg_length = sum(lengths) / total if total > 0 else 0
-        
-        style = {
-            'thread_percentage': round((thread_count / total) * 100, 1),
-            'media_percentage': round((media_count / total) * 100, 1),
-            'link_percentage': round((link_count / total) * 100, 1),
-            'question_percentage': round((question_count / total) * 100, 1),
-            'avg_tweet_length': round(avg_length, 0),
-            'content_mix': {
-                'threads': thread_count,
-                'media_posts': media_count,
-                'link_posts': link_count,
-                'questions': question_count
-            }
-        }
-        
-        logger.info(f"Content style: {thread_count} threads, {media_count} media, {link_count} links")
-        return style
-    
-    def _is_thread_starter(self, text: str) -> bool:
-        """Check if tweet is a thread starter"""
-        if not text:
-            return False
-        
-        text_lower = text.lower()
-        
-        # Common thread patterns
-        patterns = [
-            r'^\d+[/\\]',           # "1/" or "1\"
-            r'^\d+\)',              # "1)"
-            r'thread[:\s]',         # "Thread:" or "Thread "
-            r'🧵',                  # Thread emoji
-            r'👇',                  # Down arrow
-            r'a thread',            # "A thread"
-        ]
-        
-        return any(re.search(pattern, text_lower) for pattern in patterns)
-    
-    def _has_media(self, tweet: Dict, entities: Dict) -> bool:
-        """Check if tweet has media (images, videos, GIFs)"""
-        # Check entities for media
-        if 'media' in entities and entities['media']:
-            return True
-        
-        # Check tweet-level media field (some APIs include it here)
-        if 'media' in tweet and tweet['media']:
-            return True
-        
-        # Check for extended entities
-        if 'extended_entities' in tweet and 'media' in tweet.get('extended_entities', {}):
-            return True
-        
-        return False
-    
-    def _has_link(self, entities: Dict) -> bool:
-        """Check if tweet has external link"""
-        if not entities or 'urls' not in entities:
-            return False
-        
-        urls = entities.get('urls', [])
-        if not urls:
-            return False
-        
-        # Filter out X/Twitter links (these are usually for quoted tweets)
-        external_urls = [
-            u for u in urls 
-            if u.get('expanded_url') and 
-            'twitter.com' not in u.get('expanded_url', '') and
-            'x.com' not in u.get('expanded_url', '')
-        ]
-        
-        return len(external_urls) > 0
-    
-    def _analyze_posting_rhythm(self, tweets: List[Dict]) -> Dict:
-        """
-        Analyze posting frequency and timing
-        """
-        if not tweets:
-            return {'posts_per_week': 0, 'consistency_score': 0, 'date_range_days': 0, 'total_analyzed': 0}
-        
-        # Parse dates - handle multiple date formats
-        dates = []
-        for tweet in tweets:
-            created_at = tweet.get('created_at')
-            if not created_at:
-                continue
-            
-            try:
-                date = None
-                
-                # FIXED: Check Twitter format FIRST (has spaces)
-                # Format 1: Twitter format "Sat Nov 22 02:46:05 +0000 2025"
-                if created_at.count(' ') >= 5:
-                    try:
-                        date = datetime.strptime(created_at, '%a %b %d %H:%M:%S %z %Y')
-                    except ValueError:
-                        pass
-                
-                # Format 2: ISO format with Z
-                if not date and ('Z' in created_at or 'T' in created_at):
-                    try:
-                        date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                    except ValueError:
-                        pass
-                
-                # Format 3: Simple ISO fallback
-                if not date:
-                    try:
-                        date = datetime.fromisoformat(created_at)
-                    except ValueError:
-                        pass
-                
-                if date:
-                    dates.append(date)
-                    
-            except Exception as e:
-                logger.debug(f"Could not parse date '{created_at}': {e}")
-                continue
-        
-        if len(dates) < 2:
-            logger.warning(f"Not enough valid dates parsed: {len(dates)} from {len(tweets)} tweets")
-            return {
-                'posts_per_week': 0, 
-                'consistency_score': 0,
-                'date_range_days': 0,
-                'total_analyzed': len(tweets)
-            }
-        
-        # Calculate date range
-        dates_sorted = sorted(dates)
-        date_range = (dates_sorted[-1] - dates_sorted[0]).days
-        
-        if date_range == 0:
-            # All tweets on same day
-            posts_per_week = len(tweets)
-        else:
-            posts_per_week = round((len(tweets) / date_range) * 7, 1)
-        
-        # Consistency score (simplified)
-        # 7+ posts/week = 100, linear scale below that
-        consistency_score = min(100, int((posts_per_week / 7) * 100))
-        
-        logger.info(f"Posting rhythm: {posts_per_week} posts/week over {date_range} days ({len(dates)} tweets)")
-        
-        return {
-            'posts_per_week': posts_per_week,
-            'consistency_score': consistency_score,
-            'date_range_days': date_range,
-            'total_analyzed': len(tweets)
-        }
-    
-    def _calculate_engagement(self, tweets: List[Dict], user_data: Dict) -> Dict:
-        """
-        Calculate average engagement metrics
-        """
-        if not tweets:
-            return self._empty_engagement()
-        
-        total_likes = 0
-        total_retweets = 0
-        total_replies = 0
-        
-        for tweet in tweets:
-            metrics = tweet.get('public_metrics', {})
-            total_likes += metrics.get('like_count', 0)
-            total_retweets += metrics.get('retweet_count', 0)
-            total_replies += metrics.get('reply_count', 0)
-        
-        count = len(tweets)
-        followers = user_data.get('public_metrics', {}).get('followers_count', 1)
-        
-        avg_likes = total_likes / count
-        avg_retweets = total_retweets / count
-        avg_replies = total_replies / count
-        
-        # Engagement rate = (total engagements) / (followers * tweet count) * 100
-        total_engagements = total_likes + total_retweets + total_replies
-        engagement_rate = (total_engagements / followers / count) * 100 if followers > 0 else 0
-        
-        return {
-            'avg_likes': round(avg_likes, 1),
-            'avg_retweets': round(avg_retweets, 1),
-            'avg_replies': round(avg_replies, 1),
-            'engagement_rate': round(engagement_rate, 2),
-            'total_engagements': total_engagements,
-            'engagement_per_tweet': round(total_engagements / count, 1)
-        }
-    
-    def _estimate_growth(self, user_data: Dict, tweets: List[Dict]) -> Dict:
-        """
-        Estimate growth velocity
-        """
-        metrics = user_data.get('public_metrics', {})
-        followers = metrics.get('followers_count', 0)
-        tweet_count = metrics.get('tweet_count', 0)
-        
-        # Estimate based on activity level
-        if tweet_count > 0 and followers > 0:
-            rhythm = self._analyze_posting_rhythm(tweets)
-            posts_per_week = rhythm.get('posts_per_week', 0)
-            
-            # More active accounts grow faster (heuristic)
-            if posts_per_week >= 7:
-                growth_rate = 0.05  # 5%
-            elif posts_per_week >= 3:
-                growth_rate = 0.03  # 3%
-            else:
-                growth_rate = 0.01  # 1%
-            
-            estimated_30d_growth = int(followers * growth_rate)
-        else:
-            estimated_30d_growth = 0
-            growth_rate = 0
-        
-        return {
-            'estimated_30d_growth': estimated_30d_growth,
-            'growth_rate_pct': round((growth_rate * 100) if growth_rate else 0, 2)
-        }
-    
-    def _empty_content_style(self) -> Dict:
-        """Return empty content style dict"""
         return {
             'thread_percentage': 0,
-            'media_percentage': 0,
+            'media_percentage': visual_map.get(visual_ratio, 40),
             'link_percentage': 0,
             'question_percentage': 0,
             'avg_tweet_length': 0,
@@ -460,26 +263,76 @@ class UserProfiler:
             }
         }
     
-    def _empty_engagement(self) -> Dict:
-        """Return empty engagement dict"""
+    def _build_posting_rhythm(self, grok_profile: Dict) -> Dict:
+        """Build posting rhythm dict from Grok profile"""
+        posts_per_week = grok_profile.get('posting_frequency_per_week', 0)
         return {
-            'avg_likes': 0,
+            'posts_per_week': posts_per_week,
+            'consistency_score': min(100, int((posts_per_week / 7) * 100)),
+            'date_range_days': 30,
+            'total_analyzed': 40
+        }
+    
+    def _build_engagement_baseline(self, grok_profile: Dict) -> Dict:
+        """Build engagement baseline from Grok profile"""
+        avg_likes = grok_profile.get('average_likes_per_post', 0)
+        followers = grok_profile.get('followers', 1)
+        
+        engagement_rate = (avg_likes / followers) * 100 if followers > 0 else 0
+        
+        return {
+            'avg_likes': avg_likes,
             'avg_retweets': 0,
             'avg_replies': 0,
-            'engagement_rate': 0,
-            'total_engagements': 0,
-            'engagement_per_tweet': 0
+            'engagement_rate': round(engagement_rate, 2),
+            'total_engagements': int(avg_likes),
+            'engagement_per_tweet': avg_likes
+        }
+    
+    def _build_growth_velocity(self, grok_profile: Dict) -> Dict:
+        """Build growth velocity from Grok profile"""
+        monthly_growth_pct = grok_profile.get('estimated_monthly_follower_growth_percent', 0)
+        followers = grok_profile.get('followers', 0)
+        estimated_growth = int(followers * (monthly_growth_pct / 100))
+        
+        return {
+            'estimated_30d_growth': estimated_growth,
+            'growth_rate_pct': monthly_growth_pct
         }
 
 
 # Test function
 def test_profiler():
-    """Test the user profiler with sample data"""
-    sample_user = {
-        'username': 'testuser',
+    """Test the user profiler"""
+    
+    # Test 1: Famous account (no tweets needed)
+    print("\n1️⃣ Testing famous account (no tweets)...")
+    famous_user = {
+        'username': 'naval',
         'id': '12345',
-        'name': 'Test User',
-        'description': 'Software developer building AI products',
+        'name': 'Naval',
+        'description': 'Angel investor. Co-founder @AngelList',
+        'public_metrics': {
+            'followers_count': 2100000,
+            'following_count': 0,
+            'tweet_count': 12000
+        }
+    }
+    
+    try:
+        profiler = UserProfiler()
+        profile = profiler.analyze_user(famous_user, tweets=None)
+        print(f"   ✅ Success! Niche: {profile['grok_profile']['primary_niche']}")
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
+    
+    # Test 2: Small account (tweets needed)
+    print("\n2️⃣ Testing small account (with tweets)...")
+    small_user = {
+        'username': 'smallaccount',
+        'id': '67890',
+        'name': 'Small Account',
+        'description': 'Content creator',
         'public_metrics': {
             'followers_count': 5000,
             'following_count': 500,
@@ -489,27 +342,17 @@ def test_profiler():
     
     sample_tweets = [
         {
-            'text': '1/ Here\'s a thread about Python...',
+            'text': 'Building in public!',
             'created_at': '2024-01-15T10:30:00Z',
-            'public_metrics': {'like_count': 50, 'retweet_count': 10, 'reply_count': 5},
-            'entities': {'urls': [{'expanded_url': 'https://example.com'}]}
-        },
-        {
-            'text': 'Just shipped a new feature!',
-            'created_at': '2024-01-14T14:20:00Z',
-            'public_metrics': {'like_count': 30, 'retweet_count': 5, 'reply_count': 2},
-            'entities': {}
-        },
-    ]
+            'public_metrics': {'like_count': 50, 'retweet_count': 10, 'reply_count': 5}
+        }
+    ] * 20
     
-    profiler = UserProfiler()
-    profile = profiler.analyze_user(sample_user, sample_tweets)
-    
-    print("✅ Profile analysis complete!")
-    print(f"   Niche: {profile['niche']}")
-    print(f"   Engagement Rate: {profile['engagement_baseline']['engagement_rate']}%")
-    print(f"   Posts/Week: {profile['posting_rhythm']['posts_per_week']}")
-    print(f"   Threads: {profile['content_style']['thread_percentage']}%")
+    try:
+        profile = profiler.analyze_user(small_user, tweets=sample_tweets)
+        print(f"   ✅ Success! Niche: {profile['grok_profile']['primary_niche']}")
+    except Exception as e:
+        print(f"   ❌ Failed: {e}")
 
 
 if __name__ == "__main__":

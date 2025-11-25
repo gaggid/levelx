@@ -1,3 +1,4 @@
+# config/settings.py
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -8,8 +9,6 @@ class Settings(BaseSettings):
     APP_URL: str = "http://localhost:8501"
     SECRET_KEY: str
     DEBUG: bool = True
-
-    GEMINI_API_KEY: Optional[str] = None
 
     # Database
     SUPABASE_URL: str
@@ -24,8 +23,8 @@ class Settings(BaseSettings):
     # TwitterAPI.io
     TWITTERAPI_KEY: Optional[str] = None
 
-    # Claude AI
-    ANTHROPIC_API_KEY: Optional[str] = None
+    # xAI Grok (REPLACED Claude AI)
+    XAI_API_KEY: Optional[str] = None
 
     # Stripe
     STRIPE_PUBLIC_KEY: Optional[str] = None

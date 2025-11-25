@@ -1,117 +1,55 @@
-# Add at top of peer_matcher.py
-from data.peer_pool_manager import PeerPoolManager
-from typing import Dict, List, Optional, Tuple
-from ai.claude_client import ClaudeClient, ClaudeAPIError
-from data.twitter_client import TwitterAPIClient, TwitterAPIError
-from data.user_profiler import UserProfiler
-from db.models import PeerMatch
-from db.connection import get_session
+# ai/peer_matcher.py
+from typing import Dict, List, Optional
 import json
 import logging
-import re
+from ai.grok_client import GrokClient, GrokAPIError
+from db.models import PeerMatch
+from db.connection import get_session
 
 logger = logging.getLogger(__name__)
 
 
 class PeerMatcher:
     """
-    AI-powered peer account matching system
+    Grok-powered peer account matching system (optimized - no tweet fetching!)
     """
     
-    # Modify __init__ method
     def __init__(self, cost_tracker=None):
-        self.claude = ClaudeClient()
-        self.twitter = TwitterAPIClient(cost_tracker=cost_tracker)
-        self.profiler = UserProfiler(cost_tracker=cost_tracker)
+        self.grok = GrokClient()
         self.cost_tracker = cost_tracker
-        self.pool_manager = PeerPoolManager(min_pool_size=10, validation_days=7)  # NEW
-        logger.info("PeerMatcher initialized with peer pool support")
+        logger.info("PeerMatcher initialized with Grok AI (optimized mode)")
     
     def find_peers(
         self,
         user_profile: Dict,
         count: int = 5,
         save_to_db: bool = False,
-        user_id: Optional[str] = None,
-        use_pool: bool = True  # NEW parameter
+        user_id: Optional[str] = None
     ) -> List[Dict]:
         """
-        Find similar accounts that are growing faster
+        Find similar accounts using Grok AI's built-in knowledge
         
-        Args:
-            user_profile: User's profile data
-            count: Number of peers to return
-            save_to_db: Save matches to database
-            user_id: User ID for database storage
-            use_pool: Check peer pool first (default True)
+        NO MORE: Fetching tweets, validating accounts, profiling peers
+        NOW: Single Grok call returns fully profiled peers!
         """
-        logger.info(f"Finding {count} peers for @{user_profile['handle']}")
-        
-        niche = user_profile['niche']
-        followers = user_profile['basic_metrics']['followers_count']
-        
-        # NEW: Check pool first if enabled
-        pool_handles = []
-        if use_pool:
-            pool_key = self.pool_manager.generate_pool_key(niche, followers)
-            pool_handles = self.pool_manager.get_peers_from_pool(
-                niche=niche,
-                followers=followers,
-                count=count * 2,  # Get more from pool for filtering
-                require_valid=True
-            )
-            
-            if pool_handles:
-                logger.info(f"✅ Pool HIT - got {len(pool_handles)} peers from pool '{pool_key}'")
-            else:
-                logger.info(f"❌ Pool MISS - pool '{pool_key}' is empty, searching Twitter")
+        logger.info(f"Finding {count} peers for @{user_profile['handle']} using Grok")
         
         try:
-            # Step 1: Get candidate handles (pool + search if needed)
-            if pool_handles and len(pool_handles) >= self.pool_manager.min_pool_size:
-                # Pool has enough peers, use them
-                suggested_handles = pool_handles
-                logger.info(f"Using {len(suggested_handles)} peers from pool")
-            else:
-                # Pool insufficient, search Twitter
-                logger.info(f"Pool has {len(pool_handles)} peers, supplementing with Twitter search")
-                search_handles = self._search_similar_accounts(user_profile, count)
-                
-                # Combine pool + search, remove duplicates
-                suggested_handles = list(set(pool_handles + search_handles))
-                logger.info(f"Combined: {len(pool_handles)} from pool + {len(search_handles)} from search = {len(suggested_handles)} total")
+            # Single Grok call gets FULLY PROFILED peers
+            peers = self._get_fully_profiled_peers(user_profile, count)
             
-            # Step 2: Validate and fetch peer profiles
-            validated_peers = self._validate_peers(suggested_handles)
-            logger.info(f"Validated {len(validated_peers)} accounts")
+            if not peers or len(peers) == 0:
+                raise Exception("Grok returned no peer suggestions")
             
-            if not validated_peers:
-                raise Exception("No valid peer accounts found")
+            logger.info(f"✅ Grok returned {len(peers)} fully profiled peers")
             
-            # Step 3: Calculate match scores
-            scored_peers = self._score_peers(user_profile, validated_peers)
+            # Convert to our format
+            formatted_peers = self._format_peers(peers)
             
-            # Step 4: Filter by follower range
-            scored_peers = self._filter_by_follower_range(user_profile, scored_peers)
+            # Take top N
+            top_peers = formatted_peers[:count]
             
-            # Step 5: Filter for faster-growing accounts
-            faster_peers = self._filter_faster_growing(user_profile, scored_peers)
-            logger.info(f"Found {len(faster_peers)} faster-growing peers")
-            
-            # Step 6: Sort by match score and take top N
-            top_peers = sorted(faster_peers, key=lambda x: x['match_score'], reverse=True)[:count]
-            
-            # Step 7: NEW - Add validated peers back to pool
-            if use_pool and top_peers:
-                pool_key = self.pool_manager.generate_pool_key(niche, followers)
-                added = self.pool_manager.add_peers_to_pool(top_peers, niche, pool_key)
-                
-                # Increment usage for peers that came from pool
-                used_from_pool = [p['handle'] for p in top_peers if p['handle'] in pool_handles]
-                if used_from_pool:
-                    self.pool_manager.increment_usage(used_from_pool, pool_key)
-            
-            # Step 8: Save to database if requested
+            # Save to database if requested
             if save_to_db and user_id:
                 self._save_to_database(user_id, top_peers)
             
@@ -122,259 +60,172 @@ class PeerMatcher:
             logger.error(f"Error in peer matching: {e}")
             raise
     
-    def _search_similar_accounts(self, user_profile: Dict, count: int) -> List[str]:
+    def _get_fully_profiled_peers(self, user_profile: Dict, count: int = 10) -> List[Dict]:
         """
-        Search Twitter for real accounts using keywords (no AI hallucination)
-        """
-        niche = user_profile['niche']
-        followers = user_profile['basic_metrics']['followers_count']
+        Get FULLY PROFILED peers from Grok using its built-in knowledge
         
-        # Niche-specific search queries
-        search_queries = {
-            'finance': ['finance trading', 'stock market', 'investing tips'],
-            'tech': ['developer programming', 'software engineer', 'tech founder'],
-            'business': ['entrepreneur startup', 'founder business', 'saas'],
-            'marketing': ['marketing growth', 'content strategy', 'digital marketing'],
-            'ai': ['artificial intelligence', 'machine learning', 'AI developer'],
-            'crypto': ['cryptocurrency', 'bitcoin ethereum', 'web3'],
+        This replaces:
+        - Twitter API fetching (10 accounts × tweets)
+        - Grok profiling (10 separate calls)
+        With: 1 Grok call that knows everything!
+        """
+        grok_profile = user_profile.get('grok_profile', {})
+        
+        # Build optimized prompt
+        handle = user_profile['handle']
+        followers = user_profile['basic_metrics']['followers_count']
+        primary_niche = grok_profile.get('primary_niche', 'general content')
+        secondary_topics = json.dumps(grok_profile.get('secondary_topics', []))
+        content_style = grok_profile.get('content_style', 'varied')
+        language_mix = grok_profile.get('language_mix', 'English 100%')
+        
+        prompt = f"""You are an expert X/Twitter analyst with knowledge of thousands of accounts.
+
+Find {count} similar accounts to @{handle} that are growing faster.
+
+USER PROFILE:
+- Handle: @{handle}
+- Followers: {followers:,}
+- Niche: {primary_niche}
+- Topics: {secondary_topics}
+- Content Style: {content_style}
+- Language: {language_mix}
+
+RULES:
+- Same primary niche + at least 2 overlapping topics
+- Follower count between {int(followers * 0.4):,} and {int(followers * 4):,}
+- Clearly growing in last 60 days
+- Active accounts (posting 3+/week in 2025)
+- Global search – no geographic bias
+
+CRITICAL: Use your BUILT-IN KNOWLEDGE of X accounts. For each peer, provide COMPLETE profile with:
+- Current follower count (your knowledge)
+- Niche and topics
+- Content style
+- Posting frequency
+- Growth trend and metrics
+- Match score and reasoning
+
+Return ONLY this JSON ({count} peers with FULL profiles):
+
+{{
+  "peers": [
+    {{
+      "handle": "exampleuser",
+      "followers": 150000,
+      "primary_niche": "detailed niche description",
+      "secondary_topics": ["topic1", "topic2", "topic3"],
+      "content_style": "threads with data, polls, educational",
+      "average_likes_per_post": 500,
+      "average_views_per_post": 25000,
+      "growth_trend_last_30_days": "growing fast",
+      "estimated_monthly_growth_percent": 12.0,
+      "posting_frequency_per_week": 18,
+      "visual_content_ratio": "high",
+      "language_mix": "English 100%",
+      "match_score": 85,
+      "match_reason": "Same niche, similar follower count, strong engagement",
+      "growth_edge": "Uses daily charts and polls at peak hours",
+      "strengths": ["consistent posting", "high engagement", "data-driven"],
+      "weaknesses_for_growth": ["could use more video content"]
+    }}
+  ]
+}}"""
+        
+        try:
+            response = self.grok.complete_json(
+                prompt=prompt,
+                temperature=0.0,
+                cost_tracker=self.cost_tracker
+            )
+            
+            peers = response.get('peers', [])
+            
+            if not peers or len(peers) == 0:
+                raise ValueError("Grok returned empty peers list")
+            
+            logger.info(f"✅ Grok returned {len(peers)} fully profiled peer suggestions")
+            return peers
+            
+        except GrokAPIError as e:
+            logger.error(f"Grok API error: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error getting Grok suggestions: {e}")
+            raise
+    
+    def _format_peers(self, peers: List[Dict]) -> List[Dict]:
+        """
+        Format Grok's peer data into our standard profile structure
+        """
+        formatted = []
+        
+        for peer in peers:
+            # Build profile matching our structure
+            profile = {
+                'handle': peer.get('handle', '').lstrip('@'),
+                'user_id': None,  # We don't have this
+                'name': peer.get('handle', ''),  # Use handle as name
+                'bio': '',
+                'profile_image': '',
+                'basic_metrics': {
+                    'followers_count': peer.get('followers', 0),
+                    'following_count': 0,
+                    'tweet_count': 0,
+                    'listed_count': 0,
+                    'follower_following_ratio': 0
+                },
+                'grok_profile': {
+                    'handle': peer.get('handle', ''),
+                    'followers': peer.get('followers', 0),
+                    'primary_niche': peer.get('primary_niche', ''),
+                    'secondary_topics': peer.get('secondary_topics', []),
+                    'content_style': peer.get('content_style', ''),
+                    'average_likes_per_post': peer.get('average_likes_per_post', 0),
+                    'average_views_per_post': peer.get('average_views_per_post', 0),
+                    'growth_trend_last_30_days': peer.get('growth_trend_last_30_days', 'unknown'),
+                    'estimated_monthly_follower_growth_percent': peer.get('estimated_monthly_growth_percent', 0),
+                    'posting_frequency_per_week': peer.get('posting_frequency_per_week', 0),
+                    'visual_content_ratio': peer.get('visual_content_ratio', 'medium'),
+                    'language_mix': peer.get('language_mix', 'English 100%'),
+                    'strengths': peer.get('strengths', []),
+                    'weaknesses_for_growth': peer.get('weaknesses_for_growth', [])
+                },
+                # Legacy fields
+                'niche': self._extract_niche(peer.get('primary_niche', '')),
+                'content_style': {},
+                'posting_rhythm': {'posts_per_week': peer.get('posting_frequency_per_week', 0)},
+                'engagement_baseline': {'avg_likes': peer.get('average_likes_per_post', 0)},
+                'growth_velocity': {'estimated_30d_growth': 0},
+                # Match data
+                'match_score': peer.get('match_score', 0),
+                'match_reason': peer.get('match_reason', ''),
+                'growth_edge': peer.get('growth_edge', ''),
+                'growth_advantage': f"+{peer.get('estimated_monthly_growth_percent', 0)}% growth/month"
+            }
+            
+            formatted.append(profile)
+        
+        # Sort by match score
+        formatted.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+        
+        return formatted
+    
+    def _extract_niche(self, primary_niche: str) -> str:
+        """Extract simple niche category"""
+        niche_keywords = {
+            'tech': ['technology', 'software', 'developer', 'programming'],
+            'business': ['business', 'entrepreneur', 'startup', 'founder'],
+            'marketing': ['marketing', 'content', 'seo'],
+            'finance': ['finance', 'investing', 'trading', 'stocks', 'crypto'],
         }
         
-        queries = search_queries.get(niche, [niche])
+        primary_lower = primary_niche.lower()
+        for niche, keywords in niche_keywords.items():
+            if any(kw in primary_lower for kw in keywords):
+                return niche
         
-        all_handles = []
-        
-        # ADAPTIVE FOLLOWER RANGE: Wider for small accounts
-        if followers < 500:
-            min_followers = int(followers * 0.3)   # 30% of user
-            max_followers = int(followers * 10.0)  # 10x user (e.g., 200 → 2,000)
-        elif followers < 1000:
-            min_followers = int(followers * 0.3)   # 30% of user
-            max_followers = int(followers * 5.0)   # 5x user (e.g., 661 → 3,305)
-        elif followers < 5000:
-            min_followers = int(followers * 0.4)   # 40% of user
-            max_followers = int(followers * 3.0)   # 3x user
-        elif followers < 10000:
-            min_followers = int(followers * 0.5)   # 50% of user
-            max_followers = int(followers * 2.5)   # 2.5x user
-        else:
-            min_followers = int(followers * 0.5)   # 50% of user
-            max_followers = int(followers * 2.0)   # 2x user
-        
-        logger.info(f"Searching for accounts with {min_followers:,}-{max_followers:,} followers (adaptive range)")
-        
-        # Track what we're seeing
-        follower_counts_seen = []
-        
-        # Search with multiple queries
-        for query in queries:
-            try:
-                logger.info(f"Searching with query: '{query}'")
-                users = self.twitter.search_users(query, max_results=20)
-                
-                logger.info(f"Search returned {len(users)} users")
-                
-                # Filter by follower range
-                matched_in_query = 0
-                for user in users:
-                    user_followers = user['public_metrics']['followers_count']
-                    follower_counts_seen.append(user_followers)
-                    
-                    if min_followers <= user_followers <= max_followers:
-                        handle = user['username']
-                        if handle not in all_handles:
-                            all_handles.append(handle)
-                            matched_in_query += 1
-                            logger.info(f"  ✅ Match: @{handle} ({user_followers:,} followers)")
-                            
-                            if len(all_handles) >= count * 2:
-                                break
-                
-                logger.info(f"Query '{query}' found {matched_in_query} matches in range")
-                
-                if len(all_handles) >= count * 2:
-                    break
-                    
-            except Exception as e:
-                logger.warning(f"Search failed for '{query}': {e}")
-                continue
-        
-        # Show what follower counts we saw
-        if follower_counts_seen:
-            follower_counts_seen.sort()
-            logger.info(f"📊 Follower counts seen: min={follower_counts_seen[0]:,}, max={follower_counts_seen[-1]:,}, median={follower_counts_seen[len(follower_counts_seen)//2]:,}")
-        
-        logger.info(f"✅ Total: Found {len(all_handles)} candidate accounts via search")
-        return all_handles[:count * 2]
-    
-    def _validate_peers(self, handles: List[str]) -> List[Dict]:
-        """
-        Validate that suggested accounts exist and fetch their profiles
-        """
-        validated = []
-        
-        for handle in handles:
-            try:
-                # Fetch user profile
-                user_data = self.twitter.get_user_by_handle(handle)
-                
-                # Check if account exists
-                if not user_data or user_data.get('id') is None:
-                    logger.warning(f"❌ Account @{handle} does not exist or is private")
-                    continue
-                
-                # Fetch recent tweets for analysis
-                tweets = self.twitter.get_user_tweets(handle, max_results=50)
-                
-                # Need at least some tweets to analyze
-                if not tweets or len(tweets) < 5:
-                    logger.warning(f"❌ @{handle} has insufficient tweets for analysis")
-                    continue
-                
-                # Profile the account
-                peer_profile = self.profiler.analyze_user(user_data, tweets)
-                
-                validated.append(peer_profile)
-                logger.info(f"✅ Validated @{handle}")
-                
-            except TwitterAPIError as e:
-                logger.warning(f"❌ Could not validate @{handle}: {e}")
-                continue
-            except Exception as e:
-                logger.warning(f"❌ Error profiling @{handle}: {e}")
-                continue
-        
-        return validated
-    
-    def _score_peers(self, user_profile: Dict, peers: List[Dict]) -> List[Dict]:
-        """Calculate match scores for each peer"""
-        scored_peers = []
-        
-        for peer in peers:
-            score = 0.0
-            reasons = []
-            
-            # 1. Follower count similarity (30 points max)
-            user_followers = user_profile['basic_metrics']['followers_count']
-            peer_followers = peer['basic_metrics']['followers_count']
-            
-            ratio = min(user_followers, peer_followers) / max(user_followers, peer_followers)
-            follower_score = ratio * 30
-            score += follower_score
-            
-            if ratio > 0.8:
-                reasons.append(f"Similar audience size ({peer_followers:,} followers)")
-            
-            # 2. Niche match (30 points max)
-            if user_profile['niche'] == peer['niche']:
-                score += 30
-                reasons.append(f"Same niche: {peer['niche']}")
-            
-            # 3. Content style similarity (20 points max)
-            style_score = self._calculate_style_similarity(
-                user_profile['content_style'],
-                peer['content_style']
-            )
-            score += style_score
-            
-            if style_score > 15:
-                reasons.append("Similar content style")
-            
-            # 4. Engagement similarity (20 points max)
-            user_eng = user_profile['engagement_baseline']['engagement_rate']
-            peer_eng = peer['engagement_baseline']['engagement_rate']
-            
-            if user_eng > 0 and peer_eng > 0:
-                eng_ratio = min(user_eng, peer_eng) / max(user_eng, peer_eng)
-                eng_score = eng_ratio * 20
-                score += eng_score
-                
-                if eng_ratio > 0.7:
-                    reasons.append(f"Strong engagement ({peer_eng:.1f}%)")
-            
-            # Add score to peer dict
-            peer['match_score'] = round(score, 1)
-            peer['match_reason'] = " • ".join(reasons[:3])
-            
-            scored_peers.append(peer)
-        
-        return scored_peers
-    
-    def _calculate_style_similarity(self, user_style: Dict, peer_style: Dict) -> float:
-        """Calculate content style similarity score (0-20)"""
-        score = 0.0
-        
-        factors = ['thread_percentage', 'media_percentage', 'link_percentage']
-        
-        for factor in factors:
-            user_val = user_style.get(factor, 0)
-            peer_val = peer_style.get(factor, 0)
-            
-            if user_val == 0 and peer_val == 0:
-                similarity = 1.0
-            else:
-                diff = abs(user_val - peer_val) / 100
-                similarity = 1 - min(diff, 1)
-            
-            score += similarity * (20 / len(factors))
-        
-        return score
-    
-    def _filter_by_follower_range(self, user_profile: Dict, peers: List[Dict]) -> List[Dict]:
-        """Remove peers outside acceptable follower range (uses same adaptive logic)"""
-        user_followers = user_profile['basic_metrics']['followers_count']
-        
-        # ADAPTIVE FOLLOWER RANGE: Same logic as search
-        if user_followers < 500:
-            min_followers = int(user_followers * 0.3)
-            max_followers = int(user_followers * 10.0)
-        elif user_followers < 1000:
-            min_followers = int(user_followers * 0.3)
-            max_followers = int(user_followers * 5.0)
-        elif user_followers < 5000:
-            min_followers = int(user_followers * 0.4)
-            max_followers = int(user_followers * 3.0)
-        elif user_followers < 10000:
-            min_followers = int(user_followers * 0.5)
-            max_followers = int(user_followers * 2.5)
-        else:
-            min_followers = int(user_followers * 0.5)
-            max_followers = int(user_followers * 2.0)
-        
-        logger.info(f"Filtering peers to range: {min_followers:,}-{max_followers:,} followers")
-        
-        filtered = []
-        for peer in peers:
-            peer_followers = peer['basic_metrics']['followers_count']
-            
-            if min_followers <= peer_followers <= max_followers:
-                filtered.append(peer)
-            else:
-                logger.info(f"❌ Filtered out @{peer['handle']} - {peer_followers:,} followers outside range")
-        
-        logger.info(f"✅ {len(filtered)} peers remain after follower range filter")
-        return filtered
-    
-    def _filter_faster_growing(self, user_profile: Dict, peers: List[Dict]) -> List[Dict]:
-        """Filter to only accounts growing faster than user"""
-        user_growth = user_profile['growth_velocity']['estimated_30d_growth']
-        
-        faster_peers = []
-        
-        for peer in peers:
-            peer_growth = peer['growth_velocity']['estimated_30d_growth']
-            
-            if peer_growth >= user_growth * 1.1:
-                peer['growth_advantage'] = f"+{peer_growth - user_growth:,} followers/month"
-                faster_peers.append(peer)
-            elif user_growth == 0:
-                faster_peers.append(peer)
-        
-        # If no faster peers found, return best matches anyway
-        if not faster_peers and peers:
-            logger.warning("No faster-growing peers found, returning best matches anyway")
-            return sorted(peers, key=lambda x: x['match_score'], reverse=True)
-        
-        return faster_peers
+        return 'other'
     
     def _save_to_database(self, user_id: str, peers: List[Dict]):
         """Save peer matches to database"""
@@ -390,7 +241,7 @@ class PeerMatcher:
                     user_id=user_id,
                     peer_handle=peer['handle'],
                     peer_followers=peer['basic_metrics']['followers_count'],
-                    match_score=peer['match_score'],
+                    match_score=peer.get('match_score', 0),
                     match_reason=peer.get('match_reason', '')
                 )
                 session.add(match)
